@@ -4,13 +4,10 @@ guardrail -> retrieve -> grade -> (rewrite -> retrieve)* -> generate -> hallucin
 """
 from typing import TypedDict
 
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from app.core.config import settings
 from app.db.vector_store import similarity_search
-
-llm = ChatOpenAI(model=settings.llm_model, api_key=settings.openai_api_key or None, temperature=0)
+from app.services.llm import get_llm
 
 MAX_REWRITES = 2
 REFUSAL_MESSAGE = (
@@ -45,13 +42,15 @@ def _context(documents: list[dict]) -> str:
 
 
 async def guardrail_node(state: RAGState) -> dict:
+    llm = get_llm(temperature=0.0)
     prompt = (
         "Decide whether the question is about HR policies, recruitment procedures, or life at the "
         "company (leave, benefits, remote work, interviews, culture, work environment). "
         "Reply with exactly YES or NO.\n\nQuestion: " + state["question"]
     )
     result = await llm.ainvoke(prompt)
-    return {"in_scope": _is_yes(result.content)}
+    content = str(result.content)
+    return {"in_scope": _is_yes(content)}
 
 
 def route_guardrail(state: RAGState) -> str:
@@ -67,12 +66,16 @@ async def retrieve_node(state: RAGState) -> dict:
 
 
 async def grade_node(state: RAGState) -> dict:
+    if not state.get("documents"):
+        return {"relevant": False}
+    llm = get_llm(temperature=0.0)
     prompt = (
         f"Question: {state['question']}\n\nRetrieved excerpts:\n{_context(state['documents'])}\n\n"
         "Are these excerpts relevant enough to answer the question? Reply YES or NO."
     )
     result = await llm.ainvoke(prompt)
-    return {"relevant": _is_yes(result.content)}
+    content = str(result.content)
+    return {"relevant": _is_yes(content)}
 
 
 def route_grade(state: RAGState) -> str:
@@ -82,32 +85,46 @@ def route_grade(state: RAGState) -> str:
 
 
 async def rewrite_node(state: RAGState) -> dict:
+    llm = get_llm(temperature=0.0)
     result = await llm.ainvoke(
         "Rewrite this employee question so it better matches formal HR policy wording. "
         "Return only the rewritten question.\n\n" + state["question"]
     )
-    return {"question": result.content.strip(), "retries": state.get("retries", 0) + 1}
+    content = str(result.content)
+    return {"question": content.strip(), "retries": state.get("retries", 0) + 1}
 
 
 async def generate_node(state: RAGState) -> dict:
+    docs = state.get("documents", [])
+    if not docs:
+        return {"answer": FALLBACK_MESSAGE, "sources": []}
+    
+    llm = get_llm(temperature=0.0)
     prompt = (
         "Answer the question using ONLY the context below. If the context does not contain the "
         "answer, say that you do not have that information.\n\n"
-        f"Context:\n{_context(state['documents'])}\n\n"
+        f"Context:\n{_context(docs)}\n\n"
         f"Question: {state['original_question']}"
     )
     result = await llm.ainvoke(prompt)
-    sources = sorted({d["source"] for d in state["documents"]})
-    return {"answer": result.content, "sources": sources}
+    content = str(result.content)
+    sources = sorted({d["source"] for d in docs})
+    return {"answer": content, "sources": sources}
 
 
 async def hallucination_node(state: RAGState) -> dict:
+    docs = state.get("documents", [])
+    if not docs:
+        return {"grounded": False, "answer": FALLBACK_MESSAGE}
+
+    llm = get_llm(temperature=0.0)
     prompt = (
-        f"Context:\n{_context(state['documents'])}\n\nAnswer:\n{state['answer']}\n\n"
+        f"Context:\n{_context(docs)}\n\nAnswer:\n{state['answer']}\n\n"
         "Is every factual claim in the answer supported by the context? Reply YES or NO."
     )
     result = await llm.ainvoke(prompt)
-    grounded = _is_yes(result.content)
+    content = str(result.content)
+    grounded = _is_yes(content)
     return {
         "grounded": grounded,
         "answer": state["answer"] if grounded else FALLBACK_MESSAGE,

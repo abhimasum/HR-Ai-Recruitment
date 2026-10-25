@@ -58,19 +58,19 @@ async def screen_resume(
     metrics = await run_screening_evaluation(jd_text, resume_text, result["reasoning"])
     session.add(Evaluation(
         candidate_id=candidate.id,
-        geval_score=metrics["geval_score"],
-        hallucination_score=metrics["hallucination_score"],
-        bias_score=metrics["bias_score"],
-        details=metrics["details"],
+        geval_score=metrics.get("geval_score"),
+        hallucination_score=metrics.get("hallucination_score"),
+        bias_score=metrics.get("bias_score"),
+        details=metrics.get("details", {}),
     ))
     await session.commit()
 
     return CandidateOut(
         id=candidate.id, name=name, score=candidate.score, status=candidate.status,
         reasoning=candidate.reasoning,
-        geval_score=metrics["geval_score"],
-        hallucination_score=metrics["hallucination_score"],
-        bias_score=metrics["bias_score"],
+        geval_score=metrics.get("geval_score"),
+        hallucination_score=metrics.get("hallucination_score"),
+        bias_score=metrics.get("bias_score"),
     )
 
 

@@ -3,12 +3,10 @@ import json
 import re
 from typing import TypedDict
 
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from app.core.config import settings
-
-llm = ChatOpenAI(model=settings.llm_model, api_key=settings.openai_api_key or None, temperature=0)
+from app.services.llm import get_llm
 
 
 class ScreeningState(TypedDict, total=False):
@@ -19,17 +17,41 @@ class ScreeningState(TypedDict, total=False):
     status: str
 
 
+def _parse_score_json(text: str) -> dict:
+    """Robustly extract and parse JSON object containing score and reasoning."""
+    # Try finding first JSON object {...}
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback to cleaning backticks
+    cleaned = re.sub(r"```json|```", "", text).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Fallback if LLM failed to produce valid JSON
+        score_match = re.search(r'"score"\s*:\s*(\d+)', text)
+        score = int(score_match.group(1)) if score_match else 50
+        return {"score": score, "reasoning": text.strip()[:500]}
+
+
 async def score_node(state: ScreeningState) -> dict:
+    llm = get_llm(temperature=0.0)
     prompt = (
-        "Score how well the resume matches the job description from 0 to 100. "
-        'Return JSON only, in the form {"score": <int>, "reasoning": "<short explanation>"}.\n\n'
+        "You are an expert HR recruitment evaluator. Score how well the candidate resume matches the job description from 0 to 100.\n"
+        'Return ONLY valid JSON matching this structure: {"score": <int between 0 and 100>, "reasoning": "<short explanation>"}.\n\n'
         f"Job description:\n{state['jd_text']}\n\nResume:\n{state['resume_text']}"
     )
     result = await llm.ainvoke(prompt)
-    raw = re.sub(r"```json|```", "", result.content).strip()
-    data = json.loads(raw)
+    content = str(result.content)
+    data = _parse_score_json(content)
+    
+    score_val = int(data.get("score", 0))
     return {
-        "score": max(0, min(100, int(data["score"]))),
+        "score": max(0, min(100, score_val)),
         "reasoning": str(data.get("reasoning", "")),
     }
 

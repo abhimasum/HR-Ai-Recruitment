@@ -1,9 +1,12 @@
 """Custom pgvector store built directly on SQLAlchemy (no managed vector DB)."""
+import logging
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import SessionLocal, engine
 from app.services.embeddings import get_embeddings
+
+logger = logging.getLogger(__name__)
 
 
 async def init_schema() -> None:
@@ -17,6 +20,28 @@ async def init_schema() -> None:
                 embedding vector({settings.embedding_dim}) NOT NULL
             )
         """))
+        
+        # Check if embedding dimension matches the current configuration
+        try:
+            res = await conn.execute(text("""
+                SELECT atttypmod 
+                FROM pg_attribute 
+                WHERE attrelid = 'policy_chunks'::regclass 
+                  AND attname = 'embedding'
+            """))
+            row = res.fetchone()
+            if row and row[0] != -1 and row[0] != settings.embedding_dim:
+                logger.info(
+                    f"Embedding dimension changed from {row[0]} to {settings.embedding_dim}. "
+                    "Updating policy_chunks table schema."
+                )
+                await conn.execute(text("TRUNCATE TABLE policy_chunks"))
+                await conn.execute(text(f"""
+                    ALTER TABLE policy_chunks 
+                    ALTER COLUMN embedding TYPE vector({settings.embedding_dim})
+                """))
+        except Exception as e:
+            logger.debug(f"Dimension check skipped or table new: {e}")
 
 
 async def count_chunks() -> int:

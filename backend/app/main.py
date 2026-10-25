@@ -1,13 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
+from app.core.config import settings
 from app.db.models import Base
 from app.db.session import engine
 from app.db.vector_store import init_schema
 from app.seed.hr_policies import seed_policies_if_empty
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -15,14 +19,19 @@ async def lifespan(app: FastAPI):
     await init_schema()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await seed_policies_if_empty()
+    try:
+        await seed_policies_if_empty()
+    except Exception as exc:
+        logger.warning(f"Could not seed sample policies at startup: {exc}")
     yield
 
 
 app = FastAPI(title="AI HR Recruitment System", version="1.0.0", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
