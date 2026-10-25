@@ -70,6 +70,7 @@ if ($confirmation -ne $ProjectId) {
 
 Invoke-Gcloud -Arguments @(
     "services", "enable",
+    "cloudresourcemanager.googleapis.com",
     "serviceusage.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
