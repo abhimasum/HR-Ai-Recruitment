@@ -120,6 +120,10 @@ jobs:
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="prefix=hr-ai-recruitment/${PROJECT_ID}"
 
+      - name: Validate Terraform configuration
+        working-directory: infra/terraform/gcp
+        run: terraform validate
+
       - name: Create Artifact Registry repository
         working-directory: infra/terraform/gcp
         env:
@@ -129,6 +133,7 @@ jobs:
           TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
           TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
           TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          TF_VAR_db_admin_password: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
           TF_VAR_openai_api_key: ${{ secrets.HR_OPENAI_API_KEY }}
         run: |
           if [ -z "${TF_VAR_db_password}" ]; then
@@ -164,6 +169,7 @@ jobs:
           TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
           TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
           TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          TF_VAR_db_admin_password: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
           DB_ADMIN_PASSWORD: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
