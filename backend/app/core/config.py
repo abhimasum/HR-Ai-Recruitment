@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://hr:hr@localhost:5432/hr"
+    database_admin_url: str = ""
     
     # LLM Settings
     llm_provider: str = "openai"  # "openai" | "vertexai"

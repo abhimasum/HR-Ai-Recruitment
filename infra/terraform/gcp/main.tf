@@ -1,5 +1,6 @@
 terraform {
   required_version = ">= 1.6"
+  backend "gcs" {}
   required_providers {
     google = { source = "hashicorp/google", version = "~> 5.44" }
   }
@@ -15,9 +16,18 @@ resource "google_project_service" "apis" {
     "run.googleapis.com",
     "sqladmin.googleapis.com",
     "artifactregistry.googleapis.com",
-    "aiplatform.googleapis.com"
+    "aiplatform.googleapis.com",
+    "iam.googleapis.com"
   ])
   service = each.key
+}
+
+resource "google_artifact_registry_repository" "images" {
+  location      = var.region
+  repository_id = var.artifact_registry_repository
+  description   = "Docker images for the AI HR recruitment app"
+  format        = "DOCKER"
+  depends_on    = [google_project_service.apis]
 }
 
 # Dedicated Service Account for Cloud Run Backend
@@ -45,11 +55,11 @@ resource "google_sql_database_instance" "db" {
   name             = "hr-postgres"
   database_version = "POSTGRES_16"
   region           = var.region
-  deletion_protection = false
+  deletion_protection = var.deletion_protection
   depends_on       = [google_project_service.apis]
 
   settings {
-    tier = "db-custom-1-3840"
+    tier = var.database_tier
     ip_configuration {
       ipv4_enabled = true
     }
@@ -100,7 +110,11 @@ resource "google_cloud_run_v2_service" "backend" {
       }
       env {
         name  = "DATABASE_URL"
-        value = "postgresql+asyncpg://hr:${var.db_password}@/hr?host=/cloudsql/${google_sql_database_instance.db.connection_name}"
+        value = "postgresql+asyncpg://hr:${urlencode(var.db_password)}@/hr?host=/cloudsql/${google_sql_database_instance.db.connection_name}"
+      }
+      env {
+        name  = "DATABASE_ADMIN_URL"
+        value = "postgresql+asyncpg://postgres:${urlencode(var.db_admin_password)}@/hr?host=/cloudsql/${google_sql_database_instance.db.connection_name}"
       }
       env {
         name  = "LLM_PROVIDER"
@@ -144,6 +158,32 @@ resource "google_cloud_run_v2_service" "backend" {
 
 resource "google_cloud_run_v2_service_iam_member" "public" {
   name     = google_cloud_run_v2_service.backend.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service" "frontend" {
+  name       = "hr-frontend"
+  location   = var.region
+  depends_on = [google_cloud_run_v2_service.backend]
+
+  template {
+    containers {
+      image = var.frontend_image
+      ports {
+        container_port = 80
+      }
+      env {
+        name  = "BACKEND_URL"
+        value = google_cloud_run_v2_service.backend.uri
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "frontend_public" {
+  name     = google_cloud_run_v2_service.frontend.name
   location = var.region
   role     = "roles/run.invoker"
   member   = "allUsers"

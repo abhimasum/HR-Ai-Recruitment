@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Candidate, Evaluation
 from app.db.session import SessionLocal
 from app.evaluation.deepeval_runner import run_screening_evaluation
+from app.api.v1.schemas import CandidateOut
 from app.services.resume_parser import extract_text
 from app.workflows.screening_graph import screening_graph
 
@@ -15,21 +15,6 @@ router = APIRouter()
 async def get_session():
     async with SessionLocal() as session:
         yield session
-
-
-class CandidateOut(BaseModel):
-    id: int
-    name: str
-    score: int
-    status: str
-    reasoning: str
-    geval_score: float | None = None
-    hallucination_score: float | None = None
-    bias_score: float | None = None
-
-
-class DecisionIn(BaseModel):
-    action: str  # "approve" | "reject"
 
 
 @router.post("/resume", response_model=CandidateOut)
@@ -91,21 +76,3 @@ async def list_candidates(session: AsyncSession = Depends(get_session)):
         for c, e in rows
     ]
 
-
-@router.post("/candidates/{candidate_id}/decision", response_model=CandidateOut)
-async def hitl_decision(
-    candidate_id: int, body: DecisionIn, session: AsyncSession = Depends(get_session)
-):
-    if body.action not in ("approve", "reject"):
-        raise HTTPException(status_code=400, detail="action must be approve or reject")
-    candidate = await session.get(Candidate, candidate_id)
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    if candidate.status != "PENDING_HUMAN_REVIEW":
-        raise HTTPException(status_code=409, detail="Candidate is not awaiting human review")
-    candidate.status = "HR_APPROVED" if body.action == "approve" else "HR_REJECTED"
-    await session.commit()
-    return CandidateOut(
-        id=candidate.id, name=candidate.name, score=candidate.score,
-        status=candidate.status, reasoning=candidate.reasoning,
-    )

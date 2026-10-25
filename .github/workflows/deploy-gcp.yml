@@ -1,0 +1,241 @@
+name: Deploy HR Recruitment App to GCP
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "infra/terraform/gcp/**"
+      - ".github/workflows/deploy-gcp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hr-recruitment-gcp-${{ vars.GCP_PROJECT_ID || 'hr-ai-recruitment' }}
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'hr-ai-recruitment' }}
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  AR_REPO: ${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY || 'hr-repo' }}
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  validate:
+    name: Validate app before deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run backend workflow tests
+        working-directory: backend
+        run: python -m unittest discover -s tests -v
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install --no-package-lock
+          npm run build
+
+  deploy:
+    name: Provision, deploy, and smoke test
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate required GitHub configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          STATE_BUCKET: ${{ vars.GCP_TERRAFORM_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ "${PROJECT_ID}" != "hr-ai-recruitment" ]; then
+            echo "::error::This workflow is configured only for project hr-ai-recruitment."
+            exit 1
+          fi
+          for name in PROJECT_ID WIF_PROVIDER DEPLOYER_SERVICE_ACCOUNT STATE_BUCKET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Required GitHub variable is missing: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify target GCP project
+        run: |
+          set -euo pipefail
+          project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+          if [ "${project_number}" != "278189990066" ]; then
+            echo "::error::Expected hr-ai-recruitment project number 278189990066; received ${project_number}."
+            exit 1
+          fi
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Initialize Terraform with GCS state
+        working-directory: infra/terraform/gcp
+        env:
+          TF_STATE_BUCKET: ${{ vars.GCP_TERRAFORM_STATE_BUCKET }}
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ]; then
+            echo "::error::Set the GCP_TERRAFORM_STATE_BUCKET repository variable to an existing GCS bucket."
+            exit 1
+          fi
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=hr-ai-recruitment/${PROJECT_ID}"
+
+      - name: Create Artifact Registry repository
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
+          TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
+          TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
+          TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          TF_VAR_openai_api_key: ${{ secrets.HR_OPENAI_API_KEY }}
+        run: |
+          if [ -z "${TF_VAR_db_password}" ]; then
+            echo "::error::Set the HR_DB_PASSWORD repository secret."
+            exit 1
+          fi
+          terraform apply \
+            -target=google_artifact_registry_repository.images \
+            -auto-approve
+
+      - name: Build and push backend image
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-backend:${{ github.sha }}
+        run: |
+          docker build --pull -t "${IMAGE}" backend
+          docker push "${IMAGE}"
+          echo "BACKEND_IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+
+      - name: Build and push frontend image
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-frontend:${{ github.sha }}
+        run: |
+          docker build --pull -t "${IMAGE}" frontend
+          docker push "${IMAGE}"
+          echo "FRONTEND_IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+
+      - name: Prepare Cloud SQL database and admin password
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
+          TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
+          TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
+          TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          DB_ADMIN_PASSWORD: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DB_ADMIN_PASSWORD}" ]; then
+            echo "::error::Set the HR_DB_ADMIN_PASSWORD repository secret."
+            exit 1
+          fi
+          terraform apply \
+            -target=google_sql_database_instance.db \
+            -target=google_sql_database.hr \
+            -target=google_sql_user.hr \
+            -auto-approve
+          gcloud sql users set-password postgres \
+            --instance=hr-postgres \
+            --project="${PROJECT_ID}" \
+            --password="${DB_ADMIN_PASSWORD}"
+
+      - name: Plan and apply infrastructure and Cloud Run deployment
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
+          TF_VAR_backend_image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-backend:${{ github.sha }}
+          TF_VAR_frontend_image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-frontend:${{ github.sha }}
+          TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          TF_VAR_db_admin_password: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
+          TF_VAR_openai_api_key: ${{ secrets.HR_OPENAI_API_KEY }}
+          TF_VAR_llm_provider: ${{ vars.HR_LLM_PROVIDER || 'vertexai' }}
+          TF_VAR_llm_model: ${{ vars.HR_LLM_MODEL || 'gemini-3.8-flash' }}
+          TF_VAR_embedding_provider: ${{ vars.HR_EMBEDDING_PROVIDER || 'vertexai' }}
+          TF_VAR_embedding_model: ${{ vars.HR_EMBEDDING_MODEL || 'text-embedding-004' }}
+          TF_VAR_embedding_dim: ${{ vars.HR_EMBEDDING_DIM || '768' }}
+          TF_VAR_min_instances: "0"
+          TF_VAR_database_tier: ${{ vars.HR_DATABASE_TIER || 'db-f1-micro' }}
+          TF_VAR_deletion_protection: "true"
+        run: |
+          terraform plan -out=tfplan
+          terraform apply -auto-approve tfplan
+          echo "FRONTEND_URL=$(terraform output -raw frontend_url)" >> "${GITHUB_ENV}"
+          echo "API_URL=$(terraform output -raw api_url)" >> "${GITHUB_ENV}"
+
+      - name: Smoke test deployed frontend and API
+        run: |
+          set -euo pipefail
+          echo "Checking frontend at ${FRONTEND_URL}"
+          curl --fail --silent --show-error --retry 18 --retry-all-errors --retry-delay 10 \
+            "${FRONTEND_URL}/" -o /dev/null
+
+          echo "Checking backend health"
+          curl --fail --silent --show-error --retry 18 --retry-all-errors --retry-delay 10 \
+            "${API_URL}/health"
+
+          echo "Checking database-backed jobs API through the frontend proxy"
+          jobs="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 10 \
+            "${FRONTEND_URL}/api/v1/jobs")"
+          python -c 'import json,sys; data=json.loads(sys.argv[1]); assert isinstance(data,list), "jobs endpoint did not return a JSON array"; assert data, "no seeded jobs returned"; print(f"Jobs API returned {len(data)} open job(s).")' "${jobs}"
+
+          echo "Checking policy RAG, Vertex AI embeddings, and model response"
+          policy="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 \
+            -H "Content-Type: application/json" \
+            -d '{"question":"What is the remote work policy?"}' \
+            "${FRONTEND_URL}/api/v1/chat/policy")"
+          python -c 'import json,sys; data=json.loads(sys.argv[1]); assert isinstance(data.get("answer"),str) and data["answer"].strip(), "policy endpoint returned no answer"; assert data.get("grounded") is True, "policy answer was not grounded"; assert data.get("sources"), "policy answer did not cite retrieved sources"; print("Policy RAG returned a grounded answer with source references.")' "${policy}"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          {
+            echo "## HR Recruitment app deployed"
+            echo ""
+            echo "- Frontend: ${FRONTEND_URL}"
+            echo "- Backend health: ${API_URL}/health"
+            echo "- Commit: ${GITHUB_SHA}"
+          } >> "${GITHUB_STEP_SUMMARY}"

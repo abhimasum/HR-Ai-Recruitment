@@ -3,15 +3,17 @@ import logging
 from sqlalchemy import text
 
 from app.core.config import settings
-from app.db.session import SessionLocal, engine
+from app.db.session import SessionLocal, admin_engine, engine
 from app.services.embeddings import get_embeddings
 
 logger = logging.getLogger(__name__)
 
 
 async def init_schema() -> None:
-    async with engine.begin() as conn:
+    async with admin_engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+    async with engine.begin() as conn:
         await conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS policy_chunks (
                 id SERIAL PRIMARY KEY,

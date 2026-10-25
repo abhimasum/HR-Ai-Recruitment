@@ -20,6 +20,14 @@ export interface Candidate {
   bias_score: number | null;
 }
 
+export interface Job {
+  id: number;
+  title: string;
+  description: string;
+  is_active: boolean;
+  created_at: string;
+}
+
 export interface PolicyAnswer {
   answer: string;
   sources: string[];

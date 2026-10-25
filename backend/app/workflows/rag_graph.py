@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 
 from app.db.vector_store import similarity_search
 from app.services.llm import get_llm
+from app.workflows.rules import relevance_route
 
 MAX_REWRITES = 2
 REFUSAL_MESSAGE = (
@@ -79,9 +80,9 @@ async def grade_node(state: RAGState) -> dict:
 
 
 def route_grade(state: RAGState) -> str:
-    if state["relevant"] or state.get("retries", 0) >= MAX_REWRITES:
-        return "generate"
-    return "rewrite"
+    return relevance_route(
+        state["relevant"], state.get("retries", 0), MAX_REWRITES
+    )
 
 
 async def rewrite_node(state: RAGState) -> dict:
@@ -112,6 +113,10 @@ async def generate_node(state: RAGState) -> dict:
     return {"answer": content, "sources": sources}
 
 
+async def fallback_node(state: RAGState) -> dict:
+    return {"answer": FALLBACK_MESSAGE, "sources": [], "grounded": False}
+
+
 async def hallucination_node(state: RAGState) -> dict:
     docs = state.get("documents", [])
     if not docs:
@@ -138,15 +143,21 @@ builder.add_node("retrieve", retrieve_node)
 builder.add_node("grade", grade_node)
 builder.add_node("rewrite", rewrite_node)
 builder.add_node("generate", generate_node)
+builder.add_node("fallback", fallback_node)
 builder.add_node("hallucination", hallucination_node)
 
 builder.set_entry_point("guardrail")
 builder.add_conditional_edges("guardrail", route_guardrail, {"retrieve": "retrieve", "refuse": "refuse"})
 builder.add_edge("refuse", END)
 builder.add_edge("retrieve", "grade")
-builder.add_conditional_edges("grade", route_grade, {"generate": "generate", "rewrite": "rewrite"})
+builder.add_conditional_edges(
+    "grade",
+    route_grade,
+    {"generate": "generate", "rewrite": "rewrite", "fallback": "fallback"},
+)
 builder.add_edge("rewrite", "retrieve")
 builder.add_edge("generate", "hallucination")
+builder.add_edge("fallback", END)
 builder.add_edge("hallucination", END)
 
 rag_graph = builder.compile()

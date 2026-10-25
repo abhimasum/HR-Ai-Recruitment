@@ -1,7 +1,7 @@
 import { useRef, useState, DragEvent, FormEvent } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Upload, Send, Bot, User } from "lucide-react";
-import { api, Candidate, PolicyAnswer } from "../api";
+import { api, Candidate, Job, PolicyAnswer } from "../api";
 
 const PROMPT_CHIPS = [
   "What is the remote work policy?",
@@ -32,26 +32,26 @@ export default function CandidateView() {
   );
 }
 
-const JD_OPTIONS = [
-  "Senior Backend Engineer - Python, FastAPI, PostgreSQL, 5+ years",
-  "Frontend Engineer - React, TypeScript, Tailwind, 3+ years",
-  "Data Analyst - SQL, Python, dashboards, 2+ years",
-];
-
 function ApplyPanel() {
   const [name, setName] = useState("");
-  const [jd, setJd] = useState(JD_OPTIONS[0]);
+  const [jobId, setJobId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [result, setResult] = useState<Candidate | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { data: jobs = [], isLoading, isError } = useQuery({
+    queryKey: ["jobs", "active"],
+    queryFn: async () => (await api.get<Job[]>("/jobs")).data,
+  });
+  const selectedJob = jobs.find((job) => String(job.id) === jobId) ?? jobs[0];
 
   const submit = useMutation({
     mutationFn: async () => {
+      if (!selectedJob || !file) throw new Error("Select a job and resume before submitting.");
       const form = new FormData();
       form.append("name", name);
-      form.append("jd_text", jd);
-      form.append("resume", file!);
+      form.append("jd_text", selectedJob.description);
+      form.append("resume", file);
       const { data } = await api.post<Candidate>("/screening/resume", form);
       return data;
     },
@@ -76,16 +76,21 @@ function ApplyPanel() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium mb-1">Job description</label>
+          <label className="block text-sm font-medium mb-1">Position</label>
           <select
             className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-            value={jd}
-            onChange={(e) => setJd(e.target.value)}
+            value={selectedJob ? String(selectedJob.id) : ""}
+            onChange={(e) => setJobId(e.target.value)}
+            disabled={isLoading || jobs.length === 0}
           >
-            {JD_OPTIONS.map((o) => (
-              <option key={o}>{o}</option>
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>{job.title}</option>
             ))}
           </select>
+          {isError && <p className="text-xs text-red-600 mt-1">Could not load open positions.</p>}
+          {!isLoading && !isError && jobs.length === 0 && (
+            <p className="text-xs text-slate-500 mt-1">There are no open positions right now.</p>
+          )}
         </div>
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -105,13 +110,17 @@ function ApplyPanel() {
           />
         </div>
         <button
-          disabled={!name || !file || submit.isPending}
+          disabled={!name.trim() || !file || !selectedJob || submit.isPending}
           onClick={() => submit.mutate()}
           className="w-full bg-indigo-600 text-white rounded-md py-2 text-sm font-medium disabled:opacity-40"
         >
           {submit.isPending ? "Screening..." : "Submit application"}
         </button>
-        {submit.isError && <p className="text-sm text-red-600">Submission failed. Please try again.</p>}
+        {submit.isError && (
+          <p className="text-sm text-red-600">
+            {submit.error instanceof Error ? submit.error.message : "Submission failed. Please try again."}
+          </p>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-5">
