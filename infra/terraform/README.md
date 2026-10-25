@@ -49,7 +49,8 @@ Before running it:
    AI provider to OpenAI.
 3. Optionally define `HR_LLM_PROVIDER`, `HR_LLM_MODEL`, `HR_EMBEDDING_PROVIDER`,
    `HR_EMBEDDING_MODEL`, `HR_EMBEDDING_DIM`, and `HR_DATABASE_TIER` repository variables. Defaults
-   are Vertex AI (`gemini-3.8-flash`, `text-embedding-004`) and Cloud SQL `db-f1-micro`.
+   are Vertex AI (`gemini-3.8-flash`, `text-embedding-004`) and Cloud SQL `db-f1-micro`. Selecting
+   Hugging Face installs its extra runtime dependencies during the backend image build.
 4. Review the workflow and start it from GitHub **Actions > Deploy HR Recruitment App to GCP >
    Run workflow**. The workflow creates billable GCP resources, including Cloud SQL; check your
    billing account and quotas before starting. On success, the workflow summary contains the live

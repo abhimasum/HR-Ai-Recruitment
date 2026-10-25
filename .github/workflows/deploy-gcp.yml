@@ -148,7 +148,9 @@ jobs:
         env:
           IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-backend:${{ github.sha }}
         run: |
-          docker build --pull -t "${IMAGE}" backend
+          docker build --pull \
+            --build-arg EMBEDDING_PROVIDER="${{ vars.HR_EMBEDDING_PROVIDER || 'vertexai' }}" \
+            -t "${IMAGE}" backend
           docker push "${IMAGE}"
           echo "BACKEND_IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
 
