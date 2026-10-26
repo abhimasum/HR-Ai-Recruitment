@@ -143,7 +143,7 @@ resource "google_cloud_run_v2_service" "backend" {
       }
       env {
         name  = "GCP_LOCATION"
-        value = var.region
+        value = var.vertex_ai_location
       }
       env {
         name  = "OPENAI_API_KEY"

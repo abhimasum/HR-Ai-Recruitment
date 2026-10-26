@@ -7,6 +7,12 @@ variable "region" {
   default = "us-central1"
 }
 
+variable "vertex_ai_location" {
+  type        = string
+  description = "Vertex AI endpoint location, independent of the infrastructure region."
+  default     = "global"
+}
+
 variable "artifact_registry_repository" {
   type    = string
   default = "hr-repo"

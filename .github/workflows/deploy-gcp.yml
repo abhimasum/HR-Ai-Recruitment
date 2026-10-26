@@ -202,6 +202,7 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.HR_OPENAI_API_KEY }}
           TF_VAR_llm_provider: ${{ vars.HR_LLM_PROVIDER || 'vertexai' }}
           TF_VAR_llm_model: ${{ vars.HR_LLM_MODEL || 'gemini-3.8-flash' }}
+          TF_VAR_vertex_ai_location: ${{ vars.HR_VERTEX_AI_LOCATION || 'global' }}
           TF_VAR_embedding_provider: ${{ vars.HR_EMBEDDING_PROVIDER || 'vertexai' }}
           TF_VAR_embedding_model: ${{ vars.HR_EMBEDDING_MODEL || 'text-embedding-004' }}
           TF_VAR_embedding_dim: ${{ vars.HR_EMBEDDING_DIM || '768' }}

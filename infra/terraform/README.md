@@ -33,8 +33,9 @@ Before running it:
    The script verifies project `hr-ai-recruitment` (number `278189990066`) before making changes.
    It creates a private, versioned Terraform state bucket; a GitHub deployer service account;
    Workload Identity Federation restricted to this repository's `main`/`master` branches; scoped
-   GitHub Actions variables; and random `HR_DB_PASSWORD` / `HR_DB_ADMIN_PASSWORD` secrets. It grants the deployer the
-   project roles needed to provision Terraform resources. No service-account key file is created.
+   GitHub Actions variables; and random `HR_DB_PASSWORD` / `HR_DB_ADMIN_PASSWORD` secrets. It grants
+   the deployer the project roles needed to provision Terraform resources. No service-account key
+   file is created.
 2. The script sets these GitHub repository **variables**:
    - `GCP_PROJECT_ID`
    - `GCP_REGION`
@@ -47,10 +48,13 @@ Before running it:
    connects as the separate, regular `hr` database user and uses `postgres` only to install
    pgvector at startup. `HR_OPENAI_API_KEY` is only needed if you switch from the default Vertex
    AI provider to OpenAI.
-3. Optionally define `HR_LLM_PROVIDER`, `HR_LLM_MODEL`, `HR_EMBEDDING_PROVIDER`,
-   `HR_EMBEDDING_MODEL`, `HR_EMBEDDING_DIM`, and `HR_DATABASE_TIER` repository variables. Defaults
-   are Vertex AI (`gemini-3.8-flash`, `text-embedding-004`) and Cloud SQL `db-f1-micro`. Selecting
-   Hugging Face installs its extra runtime dependencies during the backend image build.
+3. Optionally define `HR_LLM_PROVIDER`, `HR_LLM_MODEL`, `HR_VERTEX_AI_LOCATION`,
+   `HR_EMBEDDING_PROVIDER`, `HR_EMBEDDING_MODEL`, `HR_EMBEDDING_DIM`, and `HR_DATABASE_TIER`
+   repository variables. Defaults are Vertex AI (`gemini-3.8-flash`, `text-embedding-004`) on its
+   global endpoint, and Cloud SQL `db-f1-micro`. The global endpoint can route model processing
+   outside a specific region; set `HR_VERTEX_AI_LOCATION` to a supported regional endpoint if data
+   residency is required. Selecting Hugging Face installs its extra runtime dependencies during
+   the backend image build.
 4. Review the workflow and start it from GitHub **Actions > Deploy HR Recruitment App to GCP >
    Run workflow**. The workflow creates billable GCP resources, including Cloud SQL; check your
    billing account and quotas before starting. On success, the workflow summary contains the live
@@ -93,12 +97,14 @@ terraform apply \
   -var="db_password=YOUR_SECURE_PASSWORD" \
   -var="llm_provider=vertexai" \
   -var="llm_model=gemini-3.8-flash" \
+  -var="vertex_ai_location=global" \
   -var="embedding_provider=vertexai" \
   -var="embedding_model=text-embedding-004" \
   -var="embedding_dim=768"
 ```
 
-The current defaults use `gemini-3.8-flash` and `text-embedding-004`. Check the
+The current defaults use `gemini-3.8-flash` and `text-embedding-004` on the global Vertex AI
+endpoint. Check the
 [Vertex AI model lifecycle table](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions)
 before changing the model variables; Google lists retirement dates there.
 
