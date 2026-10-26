@@ -10,4 +10,5 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         python -m pip install --no-cache-dir -r requirements-huggingface.txt -c constraints.txt; \
     fi
 COPY app ./app
+RUN python -c "from app.main import app"
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
