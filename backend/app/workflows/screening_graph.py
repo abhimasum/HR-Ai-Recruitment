@@ -43,9 +43,9 @@ async def decide_node(state: ScreeningState) -> dict:
 
 
 builder = StateGraph(ScreeningState)
-builder.add_node("score", score_node)
+builder.add_node("score_resume", score_node)
 builder.add_node("decide", decide_node)
-builder.set_entry_point("score")
-builder.add_edge("score", "decide")
+builder.set_entry_point("score_resume")
+builder.add_edge("score_resume", "decide")
 builder.add_edge("decide", END)
 screening_graph = builder.compile()
