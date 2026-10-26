@@ -146,6 +146,10 @@ resource "google_cloud_run_v2_service" "backend" {
         value = var.vertex_ai_location
       }
       env {
+        name  = "GCP_EMBEDDING_LOCATION"
+        value = var.vertex_ai_embedding_location
+      }
+      env {
         name  = "OPENAI_API_KEY"
         value = var.openai_api_key
       }

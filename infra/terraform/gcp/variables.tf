@@ -9,8 +9,14 @@ variable "region" {
 
 variable "vertex_ai_location" {
   type        = string
-  description = "Vertex AI endpoint location, independent of the infrastructure region."
+  description = "Vertex AI generative model endpoint location, independent of the infrastructure region."
   default     = "global"
+}
+
+variable "vertex_ai_embedding_location" {
+  type        = string
+  description = "Regional Vertex AI endpoint location for embeddings."
+  default     = "us-central1"
 }
 
 variable "artifact_registry_repository" {

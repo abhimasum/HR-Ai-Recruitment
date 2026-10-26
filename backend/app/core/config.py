@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # GCP Vertex AI Settings
     gcp_project_id: str = ""
     gcp_location: str = "us-central1"
+    gcp_embedding_location: str = "us-central1"
     
     # Embeddings & Vector Search
     embedding_provider: str = "openai"  # "openai" | "vertexai" | "huggingface"

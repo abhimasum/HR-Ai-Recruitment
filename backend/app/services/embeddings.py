@@ -13,8 +13,8 @@ def get_embeddings() -> Embeddings:
         kwargs = {"model_name": settings.embedding_model}
         if settings.gcp_project_id:
             kwargs["project"] = settings.gcp_project_id
-        if settings.gcp_location:
-            kwargs["location"] = settings.gcp_location
+        if settings.gcp_embedding_location:
+            kwargs["location"] = settings.gcp_embedding_location
         return VertexAIEmbeddings(**kwargs)
 
     if settings.embedding_provider == "huggingface":
