@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.api.dependencies import get_current_account
+from app.db.models import Account
 from app.workflows.rag_graph import answer_policy_question
 
 router = APIRouter()
@@ -17,5 +19,8 @@ class PolicyAnswer(BaseModel):
 
 
 @router.post("/policy", response_model=PolicyAnswer)
-async def ask_policy(payload: PolicyQuestion) -> PolicyAnswer:
+async def ask_policy(
+    payload: PolicyQuestion,
+    _: Account = Depends(get_current_account),
+) -> PolicyAnswer:
     return PolicyAnswer(**(await answer_policy_question(payload.question)))

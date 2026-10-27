@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
-import { api, Candidate, ScreeningStatus } from "../api";
+import { api, Candidate, JobSummary, ScreeningStatus } from "../api";
 import JobsPanel from "./JobsPanel";
 
 const STATUS_STYLES: Record<ScreeningStatus, string> = {
@@ -16,6 +16,10 @@ const fmt = (v: number | null) => (v === null ? "-" : v.toFixed(2));
 
 function CandidatesPanel() {
   const queryClient = useQueryClient();
+  const { data: summaries = [], isLoading: summariesLoading, isError: summariesError } = useQuery({
+    queryKey: ["job-summaries"],
+    queryFn: async () => (await api.get<JobSummary[]>("/jobs/summary")).data,
+  });
   const { data: candidates = [], isLoading, isError } = useQuery({
     queryKey: ["candidates"],
     queryFn: async () => (await api.get<Candidate[]>("/screening/candidates")).data,
@@ -32,6 +36,19 @@ function CandidatesPanel() {
 
   return (
     <div>
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {summariesLoading && <p className="text-sm text-slate-500">Loading job summaries...</p>}
+        {summariesError && <p className="text-sm text-red-600">Could not load job application summaries.</p>}
+        {summaries.map((job) => (
+          <article key={job.id} className="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 className="font-semibold">{job.title}</h2>
+            <p className="mt-2 text-sm text-slate-600">Applications: {job.application_count}</p>
+            <p className="text-sm text-slate-600">
+              Average resume match: {job.average_match_percent === null ? "-" : `${job.average_match_percent}%`}
+            </p>
+          </article>
+        ))}
+      </div>
       {decide.isError && (
         <p className="mb-3 text-sm text-red-600">The review decision could not be saved. Please try again.</p>
       )}
@@ -40,7 +57,8 @@ function CandidatesPanel() {
           <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
               <th className="p-3">Candidate</th>
-              <th className="p-3">Score</th>
+              <th className="p-3">Position</th>
+              <th className="p-3">Match %</th>
               <th className="p-3">Status</th>
               <th className="p-3">GEval</th>
               <th className="p-3">Hallucination</th>
@@ -53,7 +71,8 @@ function CandidatesPanel() {
             {candidates.map((c) => (
               <tr key={c.id} className="border-t border-slate-100 align-top">
                 <td className="p-3 font-medium">{c.name}</td>
-                <td className="p-3">{c.score}</td>
+                <td className="p-3">{c.job_title ?? "Unassigned legacy application"}</td>
+                <td className="p-3">{c.score}%</td>
                 <td className="p-3">
                   <span className={`px-2 py-0.5 rounded-full text-xs ${STATUS_STYLES[c.status]}`}>{c.status}</span>
                 </td>
@@ -85,7 +104,7 @@ function CandidatesPanel() {
             ))}
             {candidates.length === 0 && (
               <tr>
-                <td colSpan={8} className="p-6 text-center text-slate-500">No applications yet.</td>
+                <td colSpan={9} className="p-6 text-center text-slate-500">No applications yet.</td>
               </tr>
             )}
           </tbody>

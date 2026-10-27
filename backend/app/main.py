@@ -6,8 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.db.models import Base
-from app.db.session import engine
+from app.db.migrations import ensure_schema
 from app.db.vector_store import init_schema
 from app.seed.jobs import seed_jobs_if_empty
 from app.seed.hr_policies import seed_policies_if_empty
@@ -18,8 +17,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_schema()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await ensure_schema()
     await seed_jobs_if_empty()
     try:
         await seed_policies_if_empty()

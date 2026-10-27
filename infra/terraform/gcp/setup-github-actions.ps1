@@ -75,6 +75,7 @@ Invoke-Gcloud -Arguments @(
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
+    "secretmanager.googleapis.com",
     "--project=$ProjectId"
 )
 
@@ -97,7 +98,8 @@ $projectRoles = @(
     "roles/run.admin",
     "roles/iam.serviceAccountAdmin",
     "roles/resourcemanager.projectIamAdmin",
-    "roles/iam.serviceAccountUser"
+    "roles/iam.serviceAccountUser",
+    "roles/secretmanager.admin"
 )
 foreach ($role in $projectRoles) {
     Invoke-Gcloud -Arguments @(
@@ -234,8 +236,10 @@ foreach ($secretName in @("HR_DB_PASSWORD", "HR_DB_ADMIN_PASSWORD")) {
     [Array]::Clear($randomBytes, 0, $randomBytes.Length)
 }
 
+& (Join-Path $PSScriptRoot "set-initial-accounts.ps1")
+
 Write-Host ""
-Write-Host "GitHub Actions WIF, Terraform state, and database secrets are configured."
+Write-Host "GitHub Actions WIF, Terraform state, database secrets, and initial account secret are configured."
 Write-Host "Repository: https://github.com/$GitHubRepository"
 Write-Host "Project: $ProjectId ($projectNumber)"
 Write-Host "Region: $Region"

@@ -2,6 +2,12 @@ variable "project_id" {
   type = string
 }
 
+variable "deployer_service_account" {
+  type        = string
+  description = "Optional GitHub Actions service account that manages bootstrap secrets."
+  default     = ""
+}
+
 variable "region" {
   type    = string
   default = "us-central1"

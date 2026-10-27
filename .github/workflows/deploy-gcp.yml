@@ -66,6 +66,7 @@ jobs:
           WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
           STATE_BUCKET: ${{ vars.GCP_TERRAFORM_STATE_BUCKET }}
+          INITIAL_ACCOUNTS_JSON: ${{ secrets.HR_INITIAL_ACCOUNTS_JSON }}
         run: |
           set -euo pipefail
           if [ "${PROJECT_ID}" != "hr-ai-recruitment" ]; then
@@ -78,6 +79,10 @@ jobs:
               exit 1
             fi
           done
+          if [ -z "${INITIAL_ACCOUNTS_JSON}" ]; then
+            echo "::error::Set the HR_INITIAL_ACCOUNTS_JSON repository secret."
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v2
@@ -89,6 +94,11 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up Python for deployment smoke tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Verify target GCP project
         run: |
@@ -129,6 +139,7 @@ jobs:
         env:
           TF_VAR_project_id: ${{ env.PROJECT_ID }}
           TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_deployer_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
           TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
           TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
           TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
@@ -189,11 +200,64 @@ jobs:
             --project="${PROJECT_ID}" \
             --password="${DB_ADMIN_PASSWORD}"
 
+      - name: Create app authentication secrets
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_deployer_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
+          TF_VAR_backend_image: bootstrap.invalid/hr-backend:bootstrap
+          TF_VAR_frontend_image: bootstrap.invalid/hr-frontend:bootstrap
+          TF_VAR_db_password: ${{ secrets.HR_DB_PASSWORD }}
+          TF_VAR_db_admin_password: ${{ secrets.HR_DB_ADMIN_PASSWORD }}
+          INITIAL_ACCOUNTS_JSON: ${{ secrets.HR_INITIAL_ACCOUNTS_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INITIAL_ACCOUNTS_JSON}" ]; then
+            echo "::error::Set the HR_INITIAL_ACCOUNTS_JSON repository secret using set-initial-accounts.ps1."
+            exit 1
+          fi
+          terraform apply \
+            -target=google_secret_manager_secret.auth_signing_key \
+            -target=google_secret_manager_secret.initial_accounts \
+            -target=google_secret_manager_secret_iam_member.backend_auth_signing_key \
+            -target=google_secret_manager_secret_iam_member.bootstrap_initial_accounts \
+            -target=google_project_iam_member.deployer_secret_manager_admin \
+            -auto-approve
+
+          if ! gcloud secrets versions list hr-auth-signing-key \
+            --project="${PROJECT_ID}" \
+            --filter="state=ENABLED" --format="value(name)" | grep -q .; then
+            openssl rand -hex 32 |
+              gcloud secrets versions add hr-auth-signing-key \
+                --project="${PROJECT_ID}" --data-file=-
+          fi
+          enabled_versions="$(gcloud secrets versions list hr-initial-accounts \
+            --project="${PROJECT_ID}" \
+            --filter="state=ENABLED" --format="value(name)")"
+          new_accounts_hash="$(printf '%s' "${INITIAL_ACCOUNTS_JSON}" | sha256sum | cut -d ' ' -f 1)"
+          if [ -z "${enabled_versions}" ]; then
+            printf '%s' "${INITIAL_ACCOUNTS_JSON}" |
+              gcloud secrets versions add hr-initial-accounts \
+                --project="${PROJECT_ID}" --data-file=-
+          else
+            current_accounts_hash="$(gcloud secrets versions access latest \
+              --secret=hr-initial-accounts \
+              --project="${PROJECT_ID}" | sha256sum | cut -d ' ' -f 1)"
+            if [ "${new_accounts_hash}" != "${current_accounts_hash}" ]; then
+              printf '%s' "${INITIAL_ACCOUNTS_JSON}" |
+                gcloud secrets versions add hr-initial-accounts \
+                  --project="${PROJECT_ID}" --data-file=-
+            fi
+          fi
+
       - name: Plan and apply infrastructure and Cloud Run deployment
         working-directory: infra/terraform/gcp
         env:
           TF_VAR_project_id: ${{ env.PROJECT_ID }}
           TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_deployer_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
           TF_VAR_artifact_registry_repository: ${{ env.AR_REPO }}
           TF_VAR_backend_image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-backend:${{ github.sha }}
           TF_VAR_frontend_image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/hr-frontend:${{ github.sha }}
@@ -216,7 +280,16 @@ jobs:
           echo "FRONTEND_URL=$(terraform output -raw frontend_url)" >> "${GITHUB_ENV}"
           echo "API_URL=$(terraform output -raw api_url)" >> "${GITHUB_ENV}"
 
+      - name: Seed application login accounts
+        run: |
+          gcloud run jobs execute hr-account-bootstrap \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --wait
+
       - name: Smoke test deployed frontend and API
+        env:
+          INITIAL_ACCOUNTS_JSON: ${{ secrets.HR_INITIAL_ACCOUNTS_JSON }}
         run: |
           set -euo pipefail
           echo "Checking frontend at ${FRONTEND_URL}"
@@ -227,17 +300,81 @@ jobs:
           curl --fail --silent --show-error --retry 18 --retry-all-errors --retry-delay 10 \
             "${API_URL}/health"
 
-          echo "Checking database-backed jobs API through the frontend proxy"
-          jobs="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 10 \
-            "${FRONTEND_URL}/api/v1/jobs")"
-          python -c 'import json,sys; data=json.loads(sys.argv[1]); assert isinstance(data,list), "jobs endpoint did not return a JSON array"; assert data, "no seeded jobs returned"; print(f"Jobs API returned {len(data)} open job(s).")' "${jobs}"
+          echo "Checking login, protected jobs, and policy RAG through the frontend proxy"
+          python - <<'PY'
+          import http.cookiejar
+          import json
+          import os
+          import urllib.error
+          import urllib.request
 
-          echo "Checking policy RAG, Vertex AI embeddings, and model response"
-          policy="$(curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 \
-            -H "Content-Type: application/json" \
-            -d '{"question":"What is the remote work policy?"}' \
-            "${FRONTEND_URL}/api/v1/chat/policy")"
-          python -c 'import json,sys; data=json.loads(sys.argv[1]); assert isinstance(data.get("answer"),str) and data["answer"].strip(), "policy endpoint returned no answer"; assert data.get("grounded") is True, "policy answer was not grounded"; assert data.get("sources"), "policy answer did not cite retrieved sources"; print("Policy RAG returned a grounded answer with source references.")' "${policy}"
+          base = os.environ["FRONTEND_URL"] + "/api/v1"
+          accounts = json.loads(os.environ["INITIAL_ACCOUNTS_JSON"])
+          opener = urllib.request.build_opener(
+              urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+          )
+          request = urllib.request.Request(
+              base + "/auth/login",
+              data=json.dumps({"username": "candidate1", "password": accounts["candidate1"]}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with opener.open(request, timeout=30) as response:
+              account = json.load(response)
+          assert account["role"] == "candidate", "candidate login returned the wrong role"
+
+          with opener.open(base + "/jobs", timeout=30) as response:
+              jobs = json.load(response)
+          assert isinstance(jobs, list) and jobs, "no open jobs returned after login"
+          with opener.open(base + "/screening/me", timeout=30) as response:
+              applications = json.load(response)
+          assert isinstance(applications, list), "candidate applications endpoint returned an invalid response"
+          request = urllib.request.Request(
+              base + "/auth/login",
+              data=json.dumps({"username": "test", "password": accounts["test"]}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with opener.open(request, timeout=30) as response:
+              test_account = json.load(response)
+          assert test_account["role"] == "candidate", "test login returned the wrong role"
+          try:
+              opener.open(base + "/jobs/summary", timeout=30)
+          except urllib.error.HTTPError as error:
+              assert error.code == 403, "candidate HR access returned an unexpected status"
+          else:
+              raise AssertionError("candidate account was able to access HR job summaries")
+          print(f"Candidate and test logins passed; {len(jobs)} open job(s) returned.")
+
+          hr_opener = urllib.request.build_opener(
+              urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+          )
+          request = urllib.request.Request(
+              base + "/auth/login",
+              data=json.dumps({"username": "hr", "password": accounts["hr"]}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with hr_opener.open(request, timeout=30) as response:
+              account = json.load(response)
+          assert account["role"] == "hr", "HR login returned the wrong role"
+          with hr_opener.open(base + "/jobs/summary", timeout=30) as response:
+              summaries = json.load(response)
+          with hr_opener.open(base + "/screening/candidates", timeout=30) as response:
+              candidates = json.load(response)
+          assert isinstance(summaries, list), "HR job summary endpoint returned an invalid response"
+          assert isinstance(candidates, list), "HR candidate list endpoint returned an invalid response"
+          print(f"HR login and review checks passed; {len(summaries)} job(s) summarized.")
+
+          request = urllib.request.Request(
+              base + "/chat/policy",
+              data=json.dumps({"question": "What is the remote work policy?"}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with opener.open(request, timeout=180) as response:
+              policy = json.load(response)
+          assert policy.get("answer", "").strip(), "policy endpoint returned no answer"
+          assert policy.get("grounded") is True, "policy answer was not grounded"
+          assert policy.get("sources"), "policy answer did not cite retrieved sources"
+          print("Policy RAG returned a grounded answer with source references.")
+          PY
 
       - name: Deployment summary
         if: success()

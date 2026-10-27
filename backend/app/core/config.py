@@ -6,6 +6,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://hr:hr@localhost:5432/hr"
     database_admin_url: str = ""
+    auth_signing_key: str = ""
+    auth_cookie_secure: bool = False
     
     # LLM Settings
     llm_provider: str = "openai"  # "openai" | "vertexai"

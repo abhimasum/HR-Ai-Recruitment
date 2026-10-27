@@ -1,8 +1,9 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import candidates, chat, jobs, review
+from app.api.v1.endpoints import auth, candidates, chat, jobs, review
 
 api_router = APIRouter()
+api_router.include_router(auth.router, prefix="/auth", tags=["authentication"])
 api_router.include_router(candidates.router, prefix="/screening", tags=["candidates"])
 api_router.include_router(
     review.router, prefix="/screening/candidates", tags=["human review"]

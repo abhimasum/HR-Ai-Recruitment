@@ -1,5 +1,5 @@
 import { useRef, useState, DragEvent, FormEvent } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, Send, Bot, User } from "lucide-react";
 import { api, Candidate, Job, PolicyAnswer } from "../api";
 
@@ -9,7 +9,7 @@ const PROMPT_CHIPS = [
   "What are the recruitment stages?",
 ];
 
-type Tab = "apply" | "chat";
+type Tab = "apply" | "applications" | "chat";
 
 export default function CandidateView() {
   const [tab, setTab] = useState<Tab>("apply");
@@ -17,23 +17,23 @@ export default function CandidateView() {
   return (
     <div>
       <div className="flex gap-2 mb-4">
-        {(["apply", "chat"] as Tab[]).map((t) => (
+        {(["apply", "applications", "chat"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-md text-sm font-medium ${tab === t ? "bg-white shadow border border-slate-200" : "text-slate-500"}`}
           >
-            {t === "apply" ? "Apply / Upload Resume" : "Policy Assistant"}
+            {t === "apply" ? "Apply for a job" : t === "applications" ? "My applications" : "Policy Assistant"}
           </button>
         ))}
       </div>
-      {tab === "apply" ? <ApplyPanel /> : <PolicyChat />}
+      {tab === "apply" ? <ApplyPanel /> : tab === "applications" ? <MyApplications /> : <PolicyChat />}
     </div>
   );
 }
 
 function ApplyPanel() {
-  const [name, setName] = useState("");
+  const queryClient = useQueryClient();
   const [jobId, setJobId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -49,13 +49,15 @@ function ApplyPanel() {
     mutationFn: async () => {
       if (!selectedJob || !file) throw new Error("Select a job and resume before submitting.");
       const form = new FormData();
-      form.append("name", name);
-      form.append("jd_text", selectedJob.description);
+      form.append("job_id", String(selectedJob.id));
       form.append("resume", file);
       const { data } = await api.post<Candidate>("/screening/resume", form);
       return data;
     },
-    onSuccess: setResult,
+    onSuccess: (candidate) => {
+      setResult(candidate);
+      void queryClient.invalidateQueries({ queryKey: ["my-applications"] });
+    },
   });
 
   const onDrop = (e: DragEvent) => {
@@ -67,14 +69,6 @@ function ApplyPanel() {
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1">Full name</label>
-          <input
-            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
         <div>
           <label className="block text-sm font-medium mb-1">Position</label>
           <select
@@ -110,7 +104,7 @@ function ApplyPanel() {
           />
         </div>
         <button
-          disabled={!name.trim() || !file || !selectedJob || submit.isPending}
+          disabled={!file || !selectedJob || submit.isPending}
           onClick={() => submit.mutate()}
           className="w-full bg-indigo-600 text-white rounded-md py-2 text-sm font-medium disabled:opacity-40"
         >
@@ -126,7 +120,8 @@ function ApplyPanel() {
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         {result ? (
           <div className="space-y-2 text-sm">
-            <p className="font-semibold">Thanks, {result.name}. Your application was received.</p>
+            <p className="font-semibold">Your application for {result.job_title} was received.</p>
+            <p className="text-slate-600">Resume match: {result.score}%</p>
             <p className="text-slate-600">
               {result.status === "AUTO_REJECTED"
                 ? "Based on this screening, your profile does not match this role at this time."
@@ -137,6 +132,33 @@ function ApplyPanel() {
           <p className="text-sm text-slate-500">Your screening status will appear here after you submit.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function MyApplications() {
+  const { data: applications = [], isLoading, isError } = useQuery({
+    queryKey: ["my-applications"],
+    queryFn: async () => (await api.get<Candidate[]>("/screening/me")).data,
+  });
+
+  if (isLoading) return <p className="text-sm text-slate-500">Loading your applications...</p>;
+  if (isError) return <p className="text-sm text-red-600">Could not load your applications. Please try again.</p>;
+  if (applications.length === 0) {
+    return <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">You have not applied to any positions yet.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {applications.map((application) => (
+        <article key={application.id} className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex flex-wrap justify-between gap-2">
+            <h2 className="font-semibold">{application.job_title ?? "Position no longer available"}</h2>
+            <span className="text-sm font-medium">Resume match: {application.score}%</span>
+          </div>
+          <p className="mt-1 text-sm text-slate-600">{application.status.replace(/_/g, " ")}</p>
+          <p className="mt-2 text-sm text-slate-600">{application.reasoning}</p>
+        </article>
+      ))}
     </div>
   );
 }

@@ -18,7 +18,8 @@ resource "google_project_service" "apis" {
     "sqladmin.googleapis.com",
     "artifactregistry.googleapis.com",
     "aiplatform.googleapis.com",
-    "iam.googleapis.com"
+    "iam.googleapis.com",
+    "secretmanager.googleapis.com"
   ])
   service = each.key
 }
@@ -35,6 +36,52 @@ resource "google_artifact_registry_repository" "images" {
 resource "google_service_account" "backend" {
   account_id   = "hr-backend-sa"
   display_name = "HR Recruitment Backend Service Account"
+}
+
+resource "google_service_account" "bootstrap" {
+  account_id   = "hr-bootstrap-sa"
+  display_name = "HR Recruitment Account Bootstrap Service Account"
+}
+
+resource "google_secret_manager_secret" "auth_signing_key" {
+  secret_id = "hr-auth-signing-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret" "initial_accounts" {
+  secret_id = "hr-initial-accounts"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_iam_member" "backend_auth_signing_key" {
+  secret_id = google_secret_manager_secret.auth_signing_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.backend.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "bootstrap_initial_accounts" {
+  secret_id = google_secret_manager_secret.initial_accounts.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.bootstrap.email}"
+}
+
+resource "google_project_iam_member" "bootstrap_cloudsql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.bootstrap.email}"
+}
+
+resource "google_project_iam_member" "deployer_secret_manager_admin" {
+  for_each = var.deployer_service_account == "" ? toset([]) : toset([var.deployer_service_account])
+  project  = var.project_id
+  role     = "roles/secretmanager.admin"
+  member   = "serviceAccount:${each.value}"
 }
 
 # Grant Vertex AI user role so Cloud Run backend can invoke Gemini and Embeddings
@@ -86,6 +133,7 @@ resource "google_cloud_run_v2_service" "backend" {
     google_project_service.apis,
     google_project_iam_member.vertex_ai_user,
     google_project_iam_member.cloudsql_client,
+    google_secret_manager_secret_iam_member.backend_auth_signing_key,
   ]
 
   template {
@@ -116,6 +164,19 @@ resource "google_cloud_run_v2_service" "backend" {
       env {
         name  = "DATABASE_ADMIN_URL"
         value = "postgresql+asyncpg://postgres:${urlencode(var.db_admin_password)}@/hr?host=/cloudsql/${google_sql_database_instance.db.connection_name}"
+      }
+      env {
+        name = "AUTH_SIGNING_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.auth_signing_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name  = "AUTH_COOKIE_SECURE"
+        value = "true"
       }
       env {
         name  = "LLM_PROVIDER"
@@ -159,6 +220,58 @@ resource "google_cloud_run_v2_service" "backend" {
       }
     }
   }
+}
+
+resource "google_cloud_run_v2_job" "account_bootstrap" {
+  name     = "hr-account-bootstrap"
+  location = var.region
+
+  template {
+    template {
+      service_account = google_service_account.bootstrap.email
+      max_retries     = 1
+      timeout         = "300s"
+
+      volumes {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = [google_sql_database_instance.db.connection_name]
+        }
+      }
+
+      containers {
+        image   = var.backend_image
+        command = ["python"]
+        args    = ["-m", "app.seed_accounts"]
+
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+
+        env {
+          name  = "DATABASE_URL"
+          value = "postgresql+asyncpg://hr:${urlencode(var.db_password)}@/hr?host=/cloudsql/${google_sql_database_instance.db.connection_name}"
+        }
+        env {
+          name = "INITIAL_ACCOUNTS_JSON"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.initial_accounts.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_secret_manager_secret_iam_member.bootstrap_initial_accounts,
+    google_project_iam_member.bootstrap_cloudsql_client,
+    google_sql_database.hr,
+    google_sql_user.hr,
+  ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {

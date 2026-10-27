@@ -1,16 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_session, require_hr
 from app.api.v1.schemas import CandidateOut, DecisionIn
-from app.db.models import Candidate
-from app.db.session import SessionLocal
+from app.db.models import Account, Candidate
 
 router = APIRouter()
-
-
-async def get_session():
-    async with SessionLocal() as session:
-        yield session
 
 
 @router.post("/{candidate_id}/decision", response_model=CandidateOut)
@@ -18,6 +13,7 @@ async def hitl_decision(
     candidate_id: int,
     body: DecisionIn,
     session: AsyncSession = Depends(get_session),
+    _: Account = Depends(require_hr),
 ) -> CandidateOut:
     if body.action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="action must be approve or reject")

@@ -17,8 +17,8 @@ Build and push both application images first:
 
 The `Deploy HR Recruitment App to GCP` workflow in `.github/workflows/deploy-gcp.yml`
 provisions Terraform resources, builds and pushes the backend and frontend images, applies the
-Cloud Run deployment, then smoke tests the frontend, backend health endpoint, and database-backed
-jobs API. It runs on changes to the application/GCP Terraform files on `main` or `master`, or
+Cloud Run deployment, initializes database-backed accounts, then smoke tests login, protected jobs,
+backend health, and policy RAG. It runs on changes to the application/GCP Terraform files on `main` or `master`, or
 manually via **Actions > Deploy HR Recruitment App to GCP > Run workflow**.
 
 Before running it:
@@ -33,7 +33,10 @@ Before running it:
    The script verifies project `hr-ai-recruitment` (number `278189990066`) before making changes.
    It creates a private, versioned Terraform state bucket; a GitHub deployer service account;
    Workload Identity Federation restricted to this repository's `main`/`master` branches; scoped
-   GitHub Actions variables; and random `HR_DB_PASSWORD` / `HR_DB_ADMIN_PASSWORD` secrets. It grants
+   GitHub Actions variables; and random `HR_DB_PASSWORD` / `HR_DB_ADMIN_PASSWORD` secrets. It prompts
+   for initial candidate/HR account passwords using `set-initial-accounts.ps1` and stores them as
+   the `HR_INITIAL_ACCOUNTS_JSON` GitHub Actions secret. For the requested demo setup, enter the
+   matching username as each password when prompted, including `test`/`test`. It grants
    the deployer the project roles needed to provision Terraform resources. No service-account key
    file is created.
 2. The script sets these GitHub repository **variables**:
@@ -46,8 +49,16 @@ Before running it:
    It creates the `HR_DB_PASSWORD` and `HR_DB_ADMIN_PASSWORD` GitHub **secrets**. The workflow
    applies the admin secret to Cloud SQL's built-in `postgres` user before deploying. The app
    connects as the separate, regular `hr` database user and uses `postgres` only to install
-   pgvector at startup. `HR_OPENAI_API_KEY` is only needed if you switch from the default Vertex
+   pgvector at startup. The workflow stores the session signing key and initial account bootstrap
+   value in Secret Manager. Application passwords are hashed in the database; redeployments do not
+   overwrite existing account passwords. `HR_OPENAI_API_KEY` is only needed if you switch from the default Vertex
    AI provider to OpenAI.
+   If WIF is already configured and authentication has not yet been deployed, run this once to set
+   the initial account secret without rotating the database passwords:
+
+       .\infra\terraform\gcp\set-initial-accounts.ps1
+
+   This is an initial bootstrap secret, not an account password-rotation workflow.
 3. Optionally define `HR_LLM_PROVIDER`, `HR_LLM_MODEL`, `HR_VERTEX_AI_LOCATION`,
    `HR_VERTEX_AI_EMBEDDING_LOCATION`,
    `HR_EMBEDDING_PROVIDER`, `HR_EMBEDDING_MODEL`, `HR_EMBEDDING_DIM`, and `HR_DATABASE_TIER`
@@ -63,17 +74,25 @@ Before running it:
    and grounded policy RAG response.
 
 The workflow first provisions the Artifact Registry repository, then publishes immutable
-commit-SHA-tagged images and applies the complete Terraform plan. Cloud SQL defaults to the
+commit-SHA-tagged images, creates Secret Manager bootstrap versions when absent, and applies the
+complete Terraform plan. Cloud SQL defaults to the
 shared-core `db-f1-micro` tier for learning/demo use; override `HR_DATABASE_TIER` if needed.
 Cloud Run scales to zero by default. Cloud SQL deletion protection is enabled, so an intentional
 teardown requires disabling it and applying Terraform before destroying resources. Public Cloud Run
-access is enabled for this demo app; it has no authentication or tenant isolation.
+access is enabled for this demo app; API routes require a database-backed account, and candidates
+can access only their own applications. Pre-existing applications remain unassigned and visible only
+to HR.
 
 To run the Terraform module manually instead of Actions, initialize the GCS backend:
 
     cd infra/terraform/gcp
     terraform init -backend-config="bucket=YOUR_STATE_BUCKET" \
       -backend-config="prefix=hr-ai-recruitment/YOUR_PROJECT_ID"
+
+Manual applies must first create `hr-auth-signing-key` and `hr-initial-accounts` in Secret Manager,
+add enabled versions, and grant the backend/bootstrap service accounts access. After applying,
+execute `gcloud run jobs execute hr-account-bootstrap --region=us-central1 --wait` to initialize
+the database accounts.
 
 | Cloud | Compute | Database | Registry | AI / LLM Provider |
 |-------|---------|----------|----------|-------------------|
@@ -116,6 +135,8 @@ Nginx container proxies `/api/` requests to the backend Cloud Run service.
 Notes:
 - AWS requires an existing VPC with public and private subnets (vpc_id, public_subnet_ids, private_subnet_ids).
 - GCP connects to Cloud SQL through the Cloud Run Unix socket. The Cloud SQL instance has a public IP but no authorized networks, so only the Cloud Run connector can reach it.
-- The GCP configuration makes the frontend and backend Cloud Run services publicly invokable. This is for learning/demo use only; the app has no authentication or tenant isolation and must not be used with real candidate information.
+- The GCP configuration makes the frontend and backend Cloud Run services publicly invokable. APIs
+  have role and candidate-ownership checks, but this remains a learning/demo system. The requested
+  simple passwords must never be used with real candidate information.
 - Azure's firewall rule for 0.0.0.0 allows all Azure services. Tighten it for production.
 - Secrets are passed as Terraform variables and end up in state. Move them to Secret Manager or Key Vault for production.
